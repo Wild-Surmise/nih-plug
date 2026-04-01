@@ -7,7 +7,7 @@ use egui::Context;
 use egui::{Vec2, ViewportCommand};
 use egui_baseview::baseview::{PhySize, Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
 use egui_baseview::{EguiWindow, Queue};
-use nih_plug::prelude::{Editor, GuiContext, ParamSetter, ParentWindowHandle};
+use nih_plug::prelude::{Editor, EditorResizeHints, GuiContext, ParamSetter, ParentWindowHandle};
 use parking_lot::Mutex;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 use std::sync::Arc;
@@ -113,23 +113,27 @@ where
                 let setter = ParamSetter::new(context.as_ref());
 
                 // If the window was requested to resize
-                if let Some(new_size) = egui_state.requested_size.swap(None) {
-                    // Ask the plugin host to resize to self.size()
-                    if context.request_resize() {
+                if let Some(request) = egui_state.requested_size.swap(None) {
+                    let allow_resize = match request.source {
+                        crate::ResizeRequestSource::Gui => context.request_resize(),
+                        crate::ResizeRequestSource::Host => true,
+                    };
+
+                    if allow_resize {
                         // Resize the content of egui window
                         let scale = egui_ctx.pixels_per_point();
                         queue.resize(PhySize::new(
-                            (new_size.0 as f32 * scale).round() as u32,
-                            (new_size.1 as f32 * scale).round() as u32,
+                            (request.size.0 as f32 * scale).round() as u32,
+                            (request.size.1 as f32 * scale).round() as u32,
                         ));
 
                         egui_ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
-                            new_size.0 as f32,
-                            new_size.1 as f32,
+                            request.size.0 as f32,
+                            request.size.1 as f32,
                         )));
 
                         // Update the state
-                        egui_state.size.store(new_size);
+                        egui_state.size.store(request.size);
                     }
                 }
 
@@ -156,7 +160,7 @@ where
         // This method will be used to ask the host for new size.
         // If the editor is currently being resized and new size hasn't been consumed and set yet, return new requested size.
         if let Some(new_size) = new_size {
-            new_size
+            new_size.size
         } else {
             self.egui_state.size()
         }
@@ -170,6 +174,23 @@ where
         }
 
         self.scaling_factor.store(Some(factor));
+        true
+    }
+
+    fn can_resize(&self) -> bool {
+        true
+    }
+
+    fn resize_hints(&self) -> Option<EditorResizeHints> {
+        self.egui_state.resize_hints().map(|hints| EditorResizeHints {
+            min_size: hints.min_size,
+            max_size: hints.max_size,
+            preserve_aspect_ratio: hints.preserve_aspect_ratio,
+        })
+    }
+
+    fn set_window_size(&self, width: u32, height: u32) -> bool {
+        self.egui_state.set_requested_size_from_host((width, height));
         true
     }
 

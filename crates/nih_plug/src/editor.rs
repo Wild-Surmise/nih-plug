@@ -7,6 +7,17 @@ use std::sync::Arc;
 
 use crate::prelude::GuiContext;
 
+/// Shared editor resize constraints and policy used by wrappers that support host-managed resizing.
+#[derive(Debug, Clone, Copy)]
+pub struct EditorResizeHints {
+    /// Minimum logical editor size in pixels.
+    pub min_size: (u32, u32),
+    /// Maximum logical editor size in pixels.
+    pub max_size: (u32, u32),
+    /// If set, hosts should preserve the editor's current aspect ratio while resizing.
+    pub preserve_aspect_ratio: bool,
+}
+
 /// An editor for a [`Plugin`][crate::prelude::Plugin].
 pub trait Editor: Send {
     /// Create an instance of the plugin's editor and embed it in the parent window. As explained in
@@ -54,6 +65,21 @@ pub trait Editor: Send {
     /// there.
     fn set_scale_factor(&self, factor: f32) -> bool;
 
+    /// Whether this editor supports dynamic host-driven resizing.
+    fn can_resize(&self) -> bool {
+        false
+    }
+
+    /// Resize policy and limits for host-managed resizing, if supported.
+    fn resize_hints(&self) -> Option<EditorResizeHints> {
+        None
+    }
+
+    /// Apply a new editor size set by the host in logical pixels.
+    fn set_window_size(&self, _width: u32, _height: u32) -> bool {
+        false
+    }
+
     /// Called whenever a specific parameter's value has changed while the editor is open. You don't
     /// need to do anything with this, but this can be used to force a redraw when the host sends a
     /// new value for a parameter or when a parameter change sent to the host gets processed.
@@ -73,7 +99,7 @@ pub trait Editor: Send {
     //       and API agnostic, add a way to ask the GuiContext if the wrapper already provides a
     //       tick function. If it does not, then the Editor implementation must handle this by
     //       itself. This would also need an associated `PREFERRED_FRAME_RATE` constant.
-    // TODO: Host->Plugin resizing
+    // TODO: Add explicit drag lifecycle hooks to mirror host-managed resize start/end semantics.
 }
 
 /// A raw window handle for platform and GUI framework agnostic editors. This implements
