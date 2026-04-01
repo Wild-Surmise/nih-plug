@@ -691,7 +691,7 @@ impl CpalMidir {
     {
         // We'll receive interlaced input samples from CPAL. These need to converted to deinterlaced
         // channels, processed, and then copied those back to an interlaced buffer for the output.
-        let buffer_size = self.config.period_size as usize;
+        let mut buffer_size = self.config.period_size as usize;
         let num_output_channels = self
             .audio_io_layout
             .main_output_channels
@@ -754,6 +754,7 @@ impl CpalMidir {
         let mut midi_output_events = Vec::with_capacity(MIDI_EVENT_QUEUE_CAPACITY);
 
         // Can't borrow from `self` in the callback
+        let audio_io_layout = self.audio_io_layout;
         let config = self.config.clone();
         let mut num_processed_samples = 0usize;
         move |data, _info| {
@@ -827,13 +828,51 @@ impl CpalMidir {
 
             {
                 // Even though we told CPAL that we wanted `buffer_size` samples, it may still give
-                // us fewer. If we receive more than what we configured, then this will panic.
+                // us fewer or more. On macOS, CoreAudio often delivers a different buffer size than
+                // requested. If we receive more, resize the storage buffers to accommodate.
                 let actual_sample_count = data.len() / num_output_channels;
-                assert!(
-                    actual_sample_count <= buffer_size,
-                    "Received {actual_sample_count} samples, while the configured buffer size is \
-                     {buffer_size}"
-                );
+                if actual_sample_count > buffer_size {
+                    buffer_size = actual_sample_count;
+                    for channel in main_io_storage.iter_mut() {
+                        channel.resize(buffer_size, 0.0f32);
+                    }
+                    for aux_channels in aux_input_storage.iter_mut() {
+                        for channel in aux_channels.iter_mut() {
+                            channel.resize(buffer_size, 0.0f32);
+                        }
+                    }
+                    for aux_channels in aux_output_storage.iter_mut() {
+                        for channel in aux_channels.iter_mut() {
+                            channel.resize(buffer_size, 0.0f32);
+                        }
+                    }
+                    buffer_manager =
+                        BufferManager::for_audio_io_layout(buffer_size, audio_io_layout);
+
+                    // Re-set channel pointers after resize
+                    main_io_channel_pointers.get().clear();
+                    for channel in main_io_storage.iter_mut() {
+                        main_io_channel_pointers.get().push(channel.as_mut_ptr());
+                    }
+                    for (input_channel_pointers, input_storage) in aux_input_channel_pointers
+                        .iter_mut()
+                        .zip(aux_input_storage.iter_mut())
+                    {
+                        input_channel_pointers.get().clear();
+                        for channel in input_storage.iter_mut() {
+                            input_channel_pointers.get().push(channel.as_mut_ptr());
+                        }
+                    }
+                    for (output_channel_pointers, output_storage) in aux_output_channel_pointers
+                        .iter_mut()
+                        .zip(aux_output_storage.iter_mut())
+                    {
+                        output_channel_pointers.get().clear();
+                        for channel in output_storage.iter_mut() {
+                            output_channel_pointers.get().push(channel.as_mut_ptr());
+                        }
+                    }
+                }
                 let buffers = unsafe {
                     buffer_manager.create_buffers(0, actual_sample_count, |buffer_sources| {
                         *buffer_sources.main_output_channel_pointers = Some(ChannelPointers {
