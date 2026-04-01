@@ -4,13 +4,15 @@ use egui::emath::GuiRounding;
 use egui::{CentralPanel, Id, Rect, Response, Sense, Ui, Vec2, pos2};
 use egui::{InnerResponse, UiBuilder};
 
-use crate::EguiState;
+use crate::{EguiResizeHints, EguiState};
 
 /// Adds a corner to the plugin window that can be dragged in order to resize it.
 /// Resizing happens through plugin API, hence a custom implementation is needed.
 pub struct ResizableWindow {
     id: Id,
     min_size: Vec2,
+    max_size: Option<Vec2>,
+    preserve_aspect_ratio: bool,
 }
 
 impl ResizableWindow {
@@ -18,6 +20,8 @@ impl ResizableWindow {
         Self {
             id: Id::new(id_source),
             min_size: Vec2::splat(16.0),
+            max_size: None,
+            preserve_aspect_ratio: false,
         }
     }
 
@@ -25,6 +29,20 @@ impl ResizableWindow {
     #[inline]
     pub fn min_size(mut self, min_size: impl Into<Vec2>) -> Self {
         self.min_size = min_size.into();
+        self
+    }
+
+    /// Won't grow larger than this.
+    #[inline]
+    pub fn max_size(mut self, max_size: impl Into<Vec2>) -> Self {
+        self.max_size = Some(max_size.into());
+        self
+    }
+
+    /// Preserve the initial aspect ratio while resizing.
+    #[inline]
+    pub fn preserve_aspect_ratio(mut self, preserve_aspect_ratio: bool) -> Self {
+        self.preserve_aspect_ratio = preserve_aspect_ratio;
         self
     }
 
@@ -46,12 +64,28 @@ impl ResizableWindow {
 
             let corner_response = ui.interact(corner_rect, self.id.with("corner"), Sense::drag());
 
+            let max_size = self
+                .max_size
+                .unwrap_or_else(|| Vec2::new(u32::MAX as f32, u32::MAX as f32));
+            egui_state.set_resize_hints(EguiResizeHints {
+                min_size: (
+                    self.min_size.x.max(1.0).round() as u32,
+                    self.min_size.y.max(1.0).round() as u32,
+                ),
+                max_size: (
+                    max_size.x.max(1.0).round() as u32,
+                    max_size.y.max(1.0).round() as u32,
+                ),
+                preserve_aspect_ratio: self.preserve_aspect_ratio,
+            });
+
             if let Some(pointer_pos) = corner_response.interact_pointer_pos() {
                 let desired_size = (pointer_pos - ui_rect.min + 0.5 * corner_response.rect.size())
-                    .max(self.min_size);
+                    .max(self.min_size)
+                    .min(max_size);
 
                 if corner_response.dragged() {
-                    egui_state.set_requested_size((
+                    egui_state.set_requested_size_from_gui((
                         desired_size.x.round() as u32,
                         desired_size.y.round() as u32,
                     ));

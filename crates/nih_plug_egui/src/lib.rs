@@ -27,6 +27,25 @@ mod editor;
 pub mod resizable_window;
 pub mod widgets;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ResizeRequestSource {
+    Gui,
+    Host,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResizeRequest {
+    pub size: (u32, u32),
+    pub source: ResizeRequestSource,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EguiResizeHints {
+    pub min_size: (u32, u32),
+    pub max_size: (u32, u32),
+    pub preserve_aspect_ratio: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct EguiSettings {
     pub graphics_config: GraphicsConfig,
@@ -118,7 +137,11 @@ pub struct EguiState {
 
     /// The new size of the window, if it was requested to resize by the GUI.
     #[serde(skip)]
-    requested_size: AtomicCell<Option<(u32, u32)>>,
+    requested_size: AtomicCell<Option<ResizeRequest>>,
+
+    /// Optional resize limits and policy shared with host wrappers for resize hints.
+    #[serde(skip)]
+    resize_hints: AtomicCell<Option<EguiResizeHints>>,
 
     /// Whether the editor's window is currently open.
     #[serde(skip)]
@@ -145,6 +168,7 @@ impl EguiState {
         Arc::new(EguiState {
             size: AtomicCell::new((width, height)),
             requested_size: Default::default(),
+            resize_hints: Default::default(),
             open: AtomicBool::new(false),
         })
     }
@@ -160,8 +184,27 @@ impl EguiState {
         self.open.load(Ordering::Acquire)
     }
 
-    /// Set the new size that will be used to resize the window if the host allows.
-    fn set_requested_size(&self, new_size: (u32, u32)) {
-        self.requested_size.store(Some(new_size));
+    /// Set the new size as requested by the GUI. Wrappers may ask the host to honor this.
+    fn set_requested_size_from_gui(&self, new_size: (u32, u32)) {
+        self.requested_size.store(Some(ResizeRequest {
+            size: new_size,
+            source: ResizeRequestSource::Gui,
+        }));
+    }
+
+    /// Set the new size as requested by the host. This should not trigger another host request.
+    pub(crate) fn set_requested_size_from_host(&self, new_size: (u32, u32)) {
+        self.requested_size.store(Some(ResizeRequest {
+            size: new_size,
+            source: ResizeRequestSource::Host,
+        }));
+    }
+
+    pub(crate) fn set_resize_hints(&self, hints: EguiResizeHints) {
+        self.resize_hints.store(Some(hints));
+    }
+
+    pub(crate) fn resize_hints(&self) -> Option<EguiResizeHints> {
+        self.resize_hints.load()
     }
 }

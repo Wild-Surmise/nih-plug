@@ -2816,25 +2816,99 @@ impl<P: ClapPlugin> Wrapper<P> {
     }
 
     unsafe extern "C" fn ext_gui_can_resize(_plugin: *const clap_plugin) -> bool {
-        // TODO: Implement Host->Plugin GUI resizing
-        false
+        check_null_ptr!(false, _plugin, unsafe { (*_plugin).plugin_data });
+        let wrapper = unsafe { &*((*_plugin).plugin_data as *const Self) };
+
+        wrapper
+            .editor
+            .borrow()
+            .as_ref()
+            .map(|editor| editor.lock().can_resize())
+            .unwrap_or(false)
     }
 
     unsafe extern "C" fn ext_gui_get_resize_hints(
-        _plugin: *const clap_plugin,
-        _hints: *mut clap_gui_resize_hints,
+        plugin: *const clap_plugin,
+        hints: *mut clap_gui_resize_hints,
     ) -> bool {
-        // TODO: Implement Host->Plugin GUI resizing
-        false
+        check_null_ptr!(false, plugin, unsafe { (*plugin).plugin_data }, hints);
+        let wrapper = unsafe { &*((*plugin).plugin_data as *const Self) };
+
+        let editor_ref = wrapper.editor.borrow();
+        let Some(editor) = editor_ref.as_ref() else {
+            return false;
+        };
+        let editor = editor.lock();
+        if !editor.can_resize() {
+            return false;
+        }
+
+        let (current_width, current_height) = editor.size();
+        let resize_hints = editor.resize_hints();
+        let (min_width, min_height, max_width, max_height, preserve_aspect_ratio) =
+            if let Some(hints) = resize_hints {
+                (
+                    hints.min_size.0,
+                    hints.min_size.1,
+                    hints.max_size.0,
+                    hints.max_size.1,
+                    hints.preserve_aspect_ratio,
+                )
+            } else {
+                (
+                    current_width,
+                    current_height,
+                    current_width,
+                    current_height,
+                    false,
+                )
+            };
+
+        unsafe {
+            (*hints).can_resize_horizontally = min_width != max_width;
+            (*hints).can_resize_vertically = min_height != max_height;
+            (*hints).preserve_aspect_ratio = preserve_aspect_ratio;
+            (*hints).aspect_ratio_width = current_width;
+            (*hints).aspect_ratio_height = current_height;
+        }
+
+        true
     }
 
     unsafe extern "C" fn ext_gui_adjust_size(
-        _plugin: *const clap_plugin,
-        _width: *mut u32,
-        _height: *mut u32,
+        plugin: *const clap_plugin,
+        width: *mut u32,
+        height: *mut u32,
     ) -> bool {
-        // TODO: Implement Host->Plugin GUI resizing
-        false
+        check_null_ptr!(false, plugin, unsafe { (*plugin).plugin_data }, width, height);
+        let wrapper = unsafe { &*((*plugin).plugin_data as *const Self) };
+
+        let editor_ref = wrapper.editor.borrow();
+        let Some(editor) = editor_ref.as_ref() else {
+            return false;
+        };
+        let editor = editor.lock();
+        if !editor.can_resize() {
+            return false;
+        }
+
+        let requested_width = unsafe { *width };
+        let requested_height = unsafe { *height };
+        let (adjusted_width, adjusted_height) = if let Some(hints) = editor.resize_hints() {
+            (
+                requested_width.clamp(hints.min_size.0, hints.max_size.0),
+                requested_height.clamp(hints.min_size.1, hints.max_size.1),
+            )
+        } else {
+            (requested_width, requested_height)
+        };
+
+        unsafe {
+            *width = adjusted_width;
+            *height = adjusted_height;
+        }
+
+        true
     }
 
     unsafe extern "C" fn ext_gui_set_size(
@@ -2842,20 +2916,32 @@ impl<P: ClapPlugin> Wrapper<P> {
         width: u32,
         height: u32,
     ) -> bool {
-        // TODO: Implement Host->Plugin GUI resizing
-        // TODO: The host will also call this if an asynchronous (on Linux) resize request fails
+        // The host may call this both for drag-resize and to confirm/revert a prior request.
         check_null_ptr!(false, plugin, unsafe { (*plugin).plugin_data });
         let wrapper = unsafe { &*((*plugin).plugin_data as *const Self) };
 
-        let (unscaled_width, unscaled_height) =
-            wrapper.editor.borrow().as_ref().unwrap().lock().size();
+        let editor_ref = wrapper.editor.borrow();
+        let Some(editor) = editor_ref.as_ref() else {
+            return false;
+        };
+        let editor = editor.lock();
+        if !editor.can_resize() {
+            return false;
+        }
+
+        let (mut requested_width, mut requested_height) = (width, height);
+        if let Some(hints) = editor.resize_hints() {
+            requested_width = requested_width.clamp(hints.min_size.0, hints.max_size.0);
+            requested_height = requested_height.clamp(hints.min_size.1, hints.max_size.1);
+        }
+
         let scaling_factor = wrapper.editor_scaling_factor.load(Ordering::Relaxed);
-        let (editor_width, editor_height) = (
-            (unscaled_width as f32 * scaling_factor).round() as u32,
-            (unscaled_height as f32 * scaling_factor).round() as u32,
+        let logical_size = (
+            (requested_width as f32 / scaling_factor).round() as u32,
+            (requested_height as f32 / scaling_factor).round() as u32,
         );
 
-        width == editor_width && height == editor_height
+        editor.set_window_size(logical_size.0, logical_size.1)
     }
 
     unsafe extern "C" fn ext_gui_set_parent(
